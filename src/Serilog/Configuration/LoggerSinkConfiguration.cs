@@ -14,12 +14,10 @@
 
 using System;
 using System.ComponentModel;
-using System.IO;
 using Serilog.Core;
 using Serilog.Core.Sinks;
 using Serilog.Debugging;
 using Serilog.Events;
-using Serilog.Formatting.Display; 
 
 namespace Serilog.Configuration
 {
@@ -31,8 +29,6 @@ namespace Serilog.Configuration
         readonly LoggerConfiguration _loggerConfiguration;
         readonly Action<ILogEventSink> _addSink;
         readonly Action<LoggerConfiguration> _applyInheritedConfiguration;
-
-        const string DefaultOutputTemplate = "{Timestamp} [{Level}] {Message}{NewLine}{Exception}";
 
         internal LoggerSinkConfiguration(LoggerConfiguration loggerConfiguration, Action<ILogEventSink> addSink, Action<LoggerConfiguration> applyInheritedConfiguration)
         {
@@ -52,7 +48,7 @@ namespace Serilog.Configuration
         /// events passed through the sink.</param>
         /// <returns>Configuration object allowing method chaining.</returns>
         /// <remarks>Provided for binary compatibility for earlier versions,
-        /// should be removed in 2.0. Not marked obsolete because warnings
+        /// should be removed in 3.0. Not marked obsolete because warnings
         /// would be syntactically annoying to avoid.</remarks>
         [EditorBrowsable(EditorBrowsableState.Never)]
         public LoggerConfiguration Sink(
@@ -110,8 +106,6 @@ namespace Serilog.Configuration
         {
             return Sink(new TSink(), restrictedToMinimumLevel, levelSwitch);
         }
-
-
 
         /// <summary>
         /// Write log events to a sub-logger, where further processing may occur. Events through

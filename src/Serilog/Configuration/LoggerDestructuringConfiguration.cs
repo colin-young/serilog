@@ -27,20 +27,24 @@ namespace Serilog.Configuration
         readonly Action<Type> _addScalar;
         readonly Action<IDestructuringPolicy> _addPolicy;
         readonly Action<int> _setMaximumDepth;
+        readonly Action<int> _setMaximumStringLength;
 
         internal LoggerDestructuringConfiguration(
             LoggerConfiguration loggerConfiguration,
             Action<Type> addScalar,
             Action<IDestructuringPolicy> addPolicy,
-            Action<int> setMaximumDepth)
+            Action<int> setMaximumDepth,
+            Action<int> setMaximumStringLength)
         {
             if (loggerConfiguration == null) throw new ArgumentNullException(nameof(loggerConfiguration));
             if (addScalar == null) throw new ArgumentNullException(nameof(addScalar));
             if (addPolicy == null) throw new ArgumentNullException(nameof(addPolicy));
+            if (setMaximumDepth == null) throw new ArgumentNullException(nameof(setMaximumStringLength));
             _loggerConfiguration = loggerConfiguration;
             _addScalar = addScalar;
             _addPolicy = addPolicy;
             _setMaximumDepth = setMaximumDepth;
+            _setMaximumStringLength = setMaximumStringLength;
         }
 
         /// <summary>
@@ -114,6 +118,28 @@ namespace Serilog.Configuration
         }
 
         /// <summary>
+        /// When destructuring objects, transform instances of the specified type with
+        /// the provided function, if the predicate returns true. Be careful to avoid any
+        /// intensive work in the predicate, as it can slow down the pipeline significantly.
+        /// </summary>
+        /// <param name="predicate">A predicate used to determine if the transform applies to
+        /// a specific type of value</param>
+        /// <param name="transformation">Function mapping instances of <typeparamref name="TValue"/>
+        /// to an alternative representation.</param>
+        /// <typeparam name="TValue">Type of values to transform.</typeparam>
+        /// <returns>Configuration object allowing method chaining.</returns>
+        /// <exception cref="ArgumentNullException"></exception>
+        public LoggerConfiguration ByTransformingWhere<TValue>(
+            Func<Type, bool> predicate,
+            Func<TValue, object> transformation)
+        {
+            if (transformation == null) throw new ArgumentNullException(nameof(transformation));
+            var policy = new ProjectedDestructuringPolicy(predicate,
+                                                          o => transformation((TValue)o));
+            return With(policy);
+        }
+
+        /// <summary>
         /// When destructuring objects, depth will be limited to 5 property traversals deep to
         /// guard against ballooning space when recursive/cyclic structures are accidentally passed. To
         /// increase this limit pass a higher value.
@@ -125,6 +151,21 @@ namespace Serilog.Configuration
         {
             if (maximumDestructuringDepth < 0) throw new ArgumentOutOfRangeException(nameof(maximumDestructuringDepth));
             _setMaximumDepth(maximumDestructuringDepth);
+            return _loggerConfiguration;
+        }
+
+        /// <summary>
+        /// When destructuring objects, string values can be restricted to specified length
+        /// thus avoiding bloating payload. Limit is applied to each value separately, 
+        /// sum of length of strings can exceed limit.
+        /// </summary>
+        /// <param name="maximumStringLength">The maximum string length.</param>
+        /// <returns>Configuration object allowing method chaining.</returns>
+        /// <exception cref="ArgumentOutOfRangeException">When passed length is less or equal to 2</exception>
+        public LoggerConfiguration ToMaximumStringLength(int maximumStringLength)
+        {
+            if (maximumStringLength < 2) throw new ArgumentOutOfRangeException(nameof(maximumStringLength), maximumStringLength, "Maximum string length must be at least two.");
+            _setMaximumStringLength(maximumStringLength);
             return _loggerConfiguration;
         }
     }

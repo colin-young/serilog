@@ -15,6 +15,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Serilog.Debugging;
 using Serilog.Events;
 
 namespace Serilog.Core.Sinks
@@ -22,25 +23,37 @@ namespace Serilog.Core.Sinks
     class FilteringSink : ILogEventSink
     {
         readonly ILogEventSink _sink;
+        readonly bool _propagateExceptions;
         readonly ILogEventFilter[] _filters;
 
-        public FilteringSink(ILogEventSink sink, IEnumerable<ILogEventFilter> filters)
+        public FilteringSink(ILogEventSink sink, IEnumerable<ILogEventFilter> filters, bool propagateExceptions)
         {
             if (sink == null) throw new ArgumentNullException(nameof(sink));
             if (filters == null) throw new ArgumentNullException(nameof(filters));
             _sink = sink;
+            _propagateExceptions = propagateExceptions;
             _filters = filters.ToArray();
         }
 
         public void Emit(LogEvent logEvent)
         {
-            foreach (var logEventFilter in _filters)
+            try
             {
-                if (!logEventFilter.IsEnabled(logEvent))
-                    return;
-            }
+                foreach (var logEventFilter in _filters)
+                {
+                    if (!logEventFilter.IsEnabled(logEvent))
+                        return;
+                }
 
-            _sink.Emit(logEvent);
+                _sink.Emit(logEvent);
+            }
+            catch (Exception ex)
+            {
+                SelfLog.WriteLine("Caught exception while applying filters: {0}", ex);
+
+                if (_propagateExceptions)
+                    throw;
+            }
         }
     }
 }

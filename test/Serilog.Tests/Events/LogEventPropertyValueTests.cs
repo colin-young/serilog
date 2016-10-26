@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if INTERNAL_TESTS
-
 using System;
 using System.Globalization;
 using System.Linq;
@@ -28,7 +26,8 @@ namespace Serilog.Tests.Events
 {
     public class LogEventPropertyValueTests
     {
-        readonly PropertyValueConverter _converter = new PropertyValueConverter(10, Enumerable.Empty<Type>(), Enumerable.Empty<IDestructuringPolicy>());
+        readonly PropertyValueConverter _converter =
+            new PropertyValueConverter(10, 1000, Enumerable.Empty<Type>(), Enumerable.Empty<IDestructuringPolicy>(), false);
 
         [Fact]
         public void AnEnumIsConvertedToANonStringScalarValue()
@@ -77,5 +76,3 @@ namespace Serilog.Tests.Events
         }
     }
 }
-
-#endif

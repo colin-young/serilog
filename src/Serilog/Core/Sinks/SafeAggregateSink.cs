@@ -14,6 +14,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Serilog.Debugging;
 using Serilog.Events;
 
@@ -21,12 +22,12 @@ namespace Serilog.Core.Sinks
 {
     class SafeAggregateSink : ILogEventSink
     {
-        readonly IEnumerable<ILogEventSink> _sinks;
+        readonly ILogEventSink[] _sinks;
 
         public SafeAggregateSink(IEnumerable<ILogEventSink> sinks)
         {
             if (sinks == null) throw new ArgumentNullException(nameof(sinks));
-            _sinks = sinks;
+            _sinks = sinks.ToArray();
         }
 
         public void Emit(LogEvent logEvent)
@@ -39,10 +40,9 @@ namespace Serilog.Core.Sinks
                 }
                 catch (Exception ex)
                 {
-                    SelfLog.WriteLine("Caught exception {0} while emitting to sink {1}.", ex, sink);
+                    SelfLog.WriteLine("Caught exception while emitting to sink {0}: {1}", sink, ex);
                 }
             }
         }
     }
 }
-

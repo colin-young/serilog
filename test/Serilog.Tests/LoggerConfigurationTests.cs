@@ -2,6 +2,8 @@
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices.ComTypes;
 using Xunit;
 using Serilog.Core;
 using Serilog.Core.Filters;
@@ -59,8 +61,6 @@ namespace Serilog.Tests
             Assert.False(sink.IsDisposed);
         }
 
-#if INTERNAL_TESTS
-
         [Fact]
         public void AFilterPreventsMatchedEventsFromPassingToTheSink()
         {
@@ -79,8 +79,6 @@ namespace Serilog.Tests
             Assert.Equal(1, events.Count);
             Assert.True(events.Contains(included));
         }
-
-#endif
 
         // ReSharper disable UnusedMember.Local, UnusedAutoPropertyAccessor.Local
         class AB
@@ -107,6 +105,76 @@ namespace Serilog.Tests
             var ev = events.Single();
             var prop = ev.Properties["AB"];
             Assert.IsType<ScalarValue>(prop);
+        }
+
+        [Fact]
+        public void DestructuringSystemTypeGivesScalarByDefault()
+        {
+            var events = new List<LogEvent>();
+            var sink = new DelegatingSink(events.Add);
+
+            var logger = new LoggerConfiguration()
+                .WriteTo.Sink(sink)
+                .CreateLogger();
+
+            var thisType = this.GetType();
+            logger.Information("{@thisType}", thisType);
+
+            var ev = events.Single();
+            var prop = ev.Properties["thisType"];
+            var sv = Assert.IsAssignableFrom<ScalarValue>(prop);
+            Assert.Equal(thisType, sv.LiteralValue());
+        }
+
+        class ProjectedDestructuringPolicy : IDestructuringPolicy
+        {
+            readonly Func<Type, bool> _canApply;
+            readonly Func<object, object> _projection;
+
+            public ProjectedDestructuringPolicy(Func<Type, bool> canApply, Func<object, object> projection)
+            {
+                if (canApply == null) throw new ArgumentNullException(nameof(canApply));
+                if (projection == null) throw new ArgumentNullException(nameof(projection));
+                _canApply = canApply;
+                _projection = projection;
+            }
+
+            public bool TryDestructure(object value, ILogEventPropertyValueFactory propertyValueFactory, out LogEventPropertyValue result)
+            {
+                if (value == null) throw new ArgumentNullException(nameof(value));
+
+                if (!_canApply(value.GetType()))
+                {
+                    result = null;
+                    return false;
+                }
+
+                var projected = _projection(value);
+                result = propertyValueFactory.CreatePropertyValue(projected, true);
+                return true;
+            }
+        }
+
+        [Fact]
+        public void DestructuringIsPossibleForSystemTypeDerivedProperties()
+        {
+            var events = new List<LogEvent>();
+            var sink = new DelegatingSink(events.Add);
+            
+            var logger = new LoggerConfiguration()
+                .Destructure.With(new ProjectedDestructuringPolicy(
+                    canApply: t => typeof(Type).GetTypeInfo().IsAssignableFrom(t.GetTypeInfo()),
+                    projection: o => ((Type)o).AssemblyQualifiedName))
+                .WriteTo.Sink(sink)
+                .CreateLogger();
+
+            var thisType = this.GetType();
+            logger.Information("{@thisType}", thisType);
+
+            var ev = events.Single();
+            var prop = ev.Properties["thisType"];
+            var sv = Assert.IsAssignableFrom<ScalarValue>(prop);
+            Assert.Equal(thisType.AssemblyQualifiedName, sv.LiteralValue());
         }
 
         [Fact]
@@ -170,7 +238,7 @@ namespace Serilog.Tests
             var enrichedPropertySeen = false;
 
             var logger = new LoggerConfiguration()
-                .WriteTo.TextWriter(new StringWriter())
+                .WriteTo.Sink(new StringSink())
                 .Enrich.With(new DelegatingEnricher((e, f) => e.AddPropertyIfAbsent(property)))
                 .Enrich.With(new DelegatingEnricher((e, f) => enrichedPropertySeen = e.Properties.ContainsKey(property.Name)))
                 .CreateLogger();
@@ -211,6 +279,153 @@ namespace Serilog.Tests
         }
 
         [Fact]
+        public void MaximumStringLengthThrowsForLimitLowerThan2()
+        {
+            var ex = Assert.Throws<ArgumentOutOfRangeException>(
+                () => new LoggerConfiguration().Destructure.ToMaximumStringLength(1));
+            Assert.Equal(1, ex.ActualValue);
+        }
+
+        [Fact]
+        public void MaximumStringLengthNOTEffectiveForString()
+        {
+            var x = "ABCD";
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(3)
+                .CreateLogger();
+
+            log.Information("{X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Equal("\"ABCD\"", limitedText);
+        }
+
+        [Fact]
+        public void MaximumStringLengthEffectiveForCapturedString()
+        {
+            var x = "ABCD";
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(3)
+                .CreateLogger();
+
+            log.Information("{@X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Equal("\"AB…\"", limitedText);
+        }
+
+        [Fact]
+        public void MaximumStringLengthEffectiveForStringifiedString()
+        {
+            var x = "ABCD";
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(3)
+                .CreateLogger();
+
+            log.Information("{$X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Equal("\"AB…\"", limitedText);
+        }
+
+        [Theory]
+        [InlineData("1234", "12…", 3)]
+        [InlineData("123", "123", 3)]
+        public void MaximumStringLengthEffectiveForCapturedObject(string text, string textAfter, int limit)
+        {
+            var x = new
+            {
+                TooLongText = text
+            };
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(limit)
+                .CreateLogger();
+
+            log.Information("{@X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Contains(textAfter, limitedText);
+        }
+
+        [Fact]
+        public void MaximumStringLengthEffectiveForStringifiedObject()
+        {
+            var x = new ToStringOfLength(4);
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(3)
+                .CreateLogger();
+
+            log.Information("{$X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Contains("##…", limitedText);
+        }
+
+        [Fact]
+        public void MaximumStringNOTLengthEffectiveForObject()
+        {
+            var x = new ToStringOfLength(4);
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(3)
+                .CreateLogger();
+
+            log.Information("{X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Contains("####", limitedText);
+        }
+
+        [Fact]
+        public void MaximumStringLengthNOTEffectiveForObject()
+        {
+            var x = new ToStringOfLength(4);
+
+            LogEvent evt = null;
+            var log = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => evt = e))
+                .Destructure.ToMaximumStringLength(3)
+                .CreateLogger();
+
+            log.Information("{X}", x);
+            var limitedText = evt.Properties["X"].ToString();
+
+            Assert.Contains("####", limitedText);
+        }
+
+        class ToStringOfLength
+        {
+            private int _toStringOfLength;
+
+            public ToStringOfLength(int toStringOfLength)
+            {
+                _toStringOfLength = toStringOfLength;
+            }
+
+            public override string ToString()
+            {
+                return new string('#', _toStringOfLength);
+            }
+        }
+
+        [Fact]
         public void DynamicallySwitchingSinkRestrictsOutput()
         {
             var eventsReceived = 0;
@@ -246,13 +461,6 @@ namespace Serilog.Tests
         }
 
         [Fact]
-        public void AnUnconfiguredLoggerShouldBeTheNullLogger()
-        {
-            var actual = new LoggerConfiguration().CreateLogger();
-            Assert.Equal(actual.GetType().Name, "SilentLogger");
-        }
-
-        [Fact]
         public void LastMinimumLevelConfigurationWins()
         {
             var sink = new CollectingSink();
@@ -266,6 +474,169 @@ namespace Serilog.Tests
             logger.Write(Some.InformationEvent());
 
             Assert.Equal(1, sink.Events.Count);
+        }
+
+        [Fact]
+        public void HigherMinimumLevelOverridesArePropagated()
+        {
+            var sink = new CollectingSink();
+
+            var logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Error)
+                .WriteTo.Sink(sink)
+                .CreateLogger();
+
+            logger.Write(Some.InformationEvent());
+            logger.ForContext(Serilog.Core.Constants.SourceContextPropertyName, "Microsoft.AspNet.Something").Write(Some.InformationEvent());
+            logger.ForContext<LoggerConfigurationTests>().Write(Some.InformationEvent());
+
+            Assert.Equal(2, sink.Events.Count);
+        }
+
+        [Fact]
+        public void LowerMinimumLevelOverridesArePropagated()
+        {
+            var sink = new CollectingSink();
+
+            var logger = new LoggerConfiguration()
+                .MinimumLevel.Error()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Debug)
+                .WriteTo.Sink(sink)
+                .CreateLogger();
+
+            logger.Write(Some.InformationEvent());
+            logger.ForContext(Serilog.Core.Constants.SourceContextPropertyName, "Microsoft.AspNet.Something").Write(Some.InformationEvent());
+            logger.ForContext<LoggerConfigurationTests>().Write(Some.InformationEvent());
+
+            Assert.Equal(1, sink.Events.Count);
+        }
+
+        [Fact]
+        public void ExceptionsThrownBySinksAreNotPropagated()
+        {
+            var logger = new LoggerConfiguration()
+                .WriteTo.Sink(new DelegatingSink(e => { throw new Exception("Boom!"); }))
+                .CreateLogger();
+
+            logger.Write(Some.InformationEvent());
+
+            Assert.True(true, "No exception reached the caller");
+        }
+
+        [Fact]
+        public void ExceptionsThrownBySinksAreNotPropagatedEvenWhenAuditingIsPresent()
+        {
+            var logger = new LoggerConfiguration()
+                .AuditTo.Sink(new CollectingSink())
+                .WriteTo.Sink(new DelegatingSink(e => { throw new Exception("Boom!"); }))
+                .CreateLogger();
+
+            logger.Write(Some.InformationEvent());
+
+            Assert.True(true, "No exception reached the caller");
+        }
+
+        [Fact]
+        public void ExceptionsThrownByFiltersAreNotPropagated()
+        {
+            var logger = new LoggerConfiguration()
+                .Filter.ByExcluding(e => { throw new Exception("Boom!"); })
+                .CreateLogger();
+
+            logger.Write(Some.InformationEvent());
+
+            Assert.True(true, "No exception reached the caller");
+        }
+
+        [Fact]
+        public void ExceptionsThrownByAuditSinksArePropagated()
+        {
+            var logger = new LoggerConfiguration()
+                .AuditTo.Sink(new DelegatingSink(e => { throw new Exception("Boom!"); }))
+                .CreateLogger();
+
+            Assert.Throws<AggregateException>(() => logger.Write(Some.InformationEvent()));
+        }
+
+        [Fact]
+        public void ExceptionsThrownByFiltersArePropagatedIfAuditingEnabled()
+        {
+            var logger = new LoggerConfiguration()
+                .AuditTo.Sink(new DelegatingSink(e => { }))
+                .Filter.ByExcluding(e => { throw new Exception("Boom!"); })
+                .CreateLogger();
+
+            Assert.Throws<Exception>(() => logger.Write(Some.InformationEvent()));
+        }
+
+        [Fact]
+        public void ExceptionsThrownByAuditSinksArePropagatedFromChildLoggers()
+        {
+            var logger = new LoggerConfiguration()
+                .AuditTo.Sink(new DelegatingSink(e => { throw new Exception("Boom!"); }))
+                .CreateLogger();
+
+            Assert.Throws<AggregateException>(() => logger
+                .ForContext<LoggerConfigurationTests>()
+                .Write(Some.InformationEvent()));
+        }
+
+        class Value { }
+
+        [Fact]
+        public void ExceptionsThrownByDestructuringPoliciesAreNotPropagated()
+        {
+            var logger = new LoggerConfiguration()
+                .WriteTo.Sink(new CollectingSink())
+                .Destructure.ByTransforming<Value>(v => { throw new Exception("Boom!"); })
+                .CreateLogger();
+
+            logger.Information("{@Value}", new Value());
+
+            Assert.True(true, "No exception reached the caller");
+        }
+
+        [Fact]
+        public void ExceptionsThrownByDestructuringPoliciesArePropagatedIfAuditingEnabled()
+        {
+            var logger = new LoggerConfiguration()
+                .AuditTo.Sink(new CollectingSink())
+                .Destructure.ByTransforming<Value>(v => { throw new Exception("Boom!"); })
+                .CreateLogger();
+
+            Assert.Throws<Exception>(() => logger.Information("{@Value}", new Value()));
+        }
+
+        class ThrowingProperty
+        {
+            // ReSharper disable once UnusedMember.Local
+            public string Property
+            {
+                get { throw new Exception("Boom!"); }
+            }
+        }
+
+        [Fact]
+        public void ExceptionsThrownByPropertyAccessorsAreNotPropagated()
+        {
+            var logger = new LoggerConfiguration()
+                .WriteTo.Sink(new CollectingSink())
+                .CreateLogger();
+
+            logger.Information("{@Value}", new ThrowingProperty());
+
+            Assert.True(true, "No exception reached the caller");
+        }
+
+        [Fact]
+        public void ExceptionsThrownByPropertyAccessorsArePropagatedIfAuditingEnabled()
+        {
+            var logger = new LoggerConfiguration()
+                .AuditTo.Sink(new CollectingSink())
+                .CreateLogger();
+
+            Assert.Throws<TargetInvocationException>(() => logger.Information("{@Value}", new ThrowingProperty()));
         }
     }
 }
